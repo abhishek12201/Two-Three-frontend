@@ -8,6 +8,8 @@ import toast from "react-hot-toast";
 import { baseURL } from "../config/AxiosHelper";
 import { getMessagess } from "../services/RoomService";
 import { timeAgo } from "../config/helper";
+import { httpClient } from "../config/AxiosHelper";
+
 const ChatPage = () => {
   const {
     roomId,
@@ -17,9 +19,6 @@ const ChatPage = () => {
     setRoomId,
     setCurrentUser,
   } = useChatContext();
-  // console.log(roomId);
-  // console.log(currentUser);
-  // console.log(connected);
 
   const navigate = useNavigate();
   useEffect(() => {
@@ -33,14 +32,13 @@ const ChatPage = () => {
   const inputRef = useRef(null);
   const chatBoxRef = useRef(null);
   const [stompClient, setStompClient] = useState(null);
+  const fileInputRef = useRef(null);
 
-  //page init:
-
+  // Page init: Load messages
   useEffect(() => {
     async function loadMessages() {
       try {
         const messages = await getMessagess(roomId);
-        // console.log(messages);
         setMessages(messages);
       } catch (error) {}
     }
@@ -49,8 +47,7 @@ const ChatPage = () => {
     }
   }, []);
 
-  //scroll down
-
+  // Scroll down when messages update
   useEffect(() => {
     if (chatBoxRef.current) {
       chatBoxRef.current.scroll({
@@ -60,28 +57,19 @@ const ChatPage = () => {
     }
   }, [messages]);
 
-  //stompClient ko init karne honge
-  //subscribe
-
+  // WebSocket connection
   useEffect(() => {
     const connectWebSocket = () => {
-      ///SockJS
       const sock = new SockJS(`${baseURL}/chat`);
       const client = Stomp.over(sock);
 
       client.connect({}, () => {
         setStompClient(client);
-
         toast.success("connected");
 
         client.subscribe(`/topic/room/${roomId}`, (message) => {
-          console.log(message);
-
           const newMessage = JSON.parse(message.body);
-
           setMessages((prev) => [...prev, newMessage]);
-
-          //rest of the work after success receiving the message
         });
       });
     };
@@ -89,16 +77,53 @@ const ChatPage = () => {
     if (connected) {
       connectWebSocket();
     }
-
-    //stomp client
   }, [roomId]);
 
-  //send message handle
+  // Handle file upload
+  const handleFileUpload = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
 
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const response = await httpClient.post("/api/v1/upload", formData, {
+        headers: {
+          "Content-Type": "multipart/form-data",
+        },
+      });
+
+      const { fileUrl, fileType } = response.data;
+
+      if (stompClient && connected) {
+        const message = {
+          sender: currentUser,
+          content: "",
+          roomId: roomId,
+          fileUrl: fileUrl,
+          fileType: fileType,
+        };
+
+        stompClient.send(
+          `/app/sendMessage/${roomId}`,
+          {},
+          JSON.stringify(message)
+        );
+      }
+
+      toast.success("File uploaded!");
+    } catch (error) {
+      console.error("File upload failed:", error);
+      toast.error("Failed to upload file");
+    }
+
+    event.target.value = null;
+  };
+
+  // Send text message
   const sendMessage = async () => {
     if (stompClient && connected && input.trim()) {
-      console.log(input);
-
       const message = {
         sender: currentUser,
         content: input,
@@ -112,8 +137,6 @@ const ChatPage = () => {
       );
       setInput("");
     }
-
-    //
   };
 
   function handleLogout() {
@@ -126,22 +149,18 @@ const ChatPage = () => {
 
   return (
     <div className="">
-      {/* this is a header */}
-      <header className="dark:border-gray-700  fixed w-full dark:bg-gray-900 py-5 shadow flex justify-around items-center">
-        {/* room name container */}
+      {/* Header */}
+      <header className="dark:border-gray-700 fixed w-full dark:bg-gray-900 py-5 shadow flex justify-around items-center">
         <div>
           <h1 className="text-xl font-semibold">
             Room : <span>{roomId}</span>
           </h1>
         </div>
-        {/* username container */}
-
         <div>
           <h1 className="text-xl font-semibold">
             User : <span>{currentUser}</span>
           </h1>
         </div>
-        {/* button: leave room */}
         <div>
           <button
             onClick={handleLogout}
@@ -154,14 +173,14 @@ const ChatPage = () => {
 
       <main
         ref={chatBoxRef}
-        className="py-20 px-10   w-2/3 dark:bg-slate-600 mx-auto h-screen overflow-auto "
+        className="py-20 px-10 w-2/3 dark:bg-slate-600 mx-auto h-screen overflow-auto"
       >
         {messages.map((message, index) => (
           <div
             key={index}
             className={`flex ${
               message.sender === currentUser ? "justify-end" : "justify-start"
-            } `}
+            }`}
           >
             <div
               className={`my-2 ${
@@ -176,7 +195,43 @@ const ChatPage = () => {
                 />
                 <div className="flex flex-col gap-1">
                   <p className="text-sm font-bold">{message.sender}</p>
-                  <p>{message.content}</p>
+                  {/* Display text content if it exists */}
+                  {message.content && <p>{message.content}</p>}
+                  {/* Display file based on fileType */}
+                  {message.fileUrl && message.fileType && (
+                    <div className="mt-2">
+                      {message.fileType === "image" || message.fileType === "gif" ? (
+                        <img
+                          src={`${baseURL}${message.fileUrl}`}
+                          alt="Uploaded file"
+                          className="max-w-full h-auto rounded"
+                          style={{ maxWidth: "200px" }}
+                        />
+                      ) : message.fileType === "video" ? (
+                        <video
+                          src={`${baseURL}${message.fileUrl}`}
+                          controls
+                          className="max-w-full h-auto rounded"
+                          style={{ maxWidth: "200px" }}
+                        />
+                      ) : message.fileType === "audio" ? (
+                        <audio
+                          src={`${baseURL}${message.fileUrl}`}
+                          controls
+                          className="w-full"
+                        />
+                      ) : message.fileType === "document" ? (
+                        <a
+                          href={`${baseURL}${message.fileUrl}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-400 underline"
+                        >
+                          View Document ({message.fileUrl.split("/").pop()})
+                        </a>
+                      ) : null}
+                    </div>
+                  )}
                   <p className="text-xs text-gray-400">
                     {timeAgo(message.timeStamp)}
                   </p>
@@ -186,9 +241,10 @@ const ChatPage = () => {
           </div>
         ))}
       </main>
-      {/* input message container */}
-      <div className=" fixed bottom-4 w-full h-16 ">
-        <div className="h-full  pr-10 gap-4 flex items-center justify-between rounded-full w-1/2 mx-auto dark:bg-gray-900">
+
+      {/* Input message container */}
+      <div className="fixed bottom-4 w-full h-16">
+        <div className="h-full pr-10 gap-4 flex items-center justify-between rounded-full w-1/2 mx-auto dark:bg-gray-900">
           <input
             value={input}
             onChange={(e) => {
@@ -201,16 +257,26 @@ const ChatPage = () => {
             }}
             type="text"
             placeholder="Type your message here..."
-            className=" w-full  dark:border-gray-600 b dark:bg-gray-800  px-5 py-2 rounded-full h-full focus:outline-none  "
+            className="w-full dark:border-gray-600 dark:bg-gray-800 px-5 py-2 rounded-full h-full focus:outline-none"
           />
 
           <div className="flex gap-1">
-            <button className="dark:bg-purple-600 h-10 w-10  flex   justify-center items-center rounded-full">
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleFileUpload}
+              accept="*/*"
+              className="hidden"
+            />
+            <button
+              onClick={() => fileInputRef.current.click()}
+              className="dark:bg-purple-600 h-10 w-10 flex justify-center items-center rounded-full"
+            >
               <MdAttachFile size={20} />
             </button>
             <button
               onClick={sendMessage}
-              className="dark:bg-green-600 h-10 w-10  flex   justify-center items-center rounded-full"
+              className="dark:bg-green-600 h-10 w-10 flex justify-center items-center rounded-full"
             >
               <MdSend size={20} />
             </button>
